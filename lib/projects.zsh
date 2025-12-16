@@ -2,6 +2,7 @@
 # Handles project resolution, listing, and selection
 
 # Resolve a project name or path to absolute path
+# For virtual projects, returns configured directory or current directory
 resolve_project_dir() {
   local input=$1
   local resolved
@@ -21,8 +22,22 @@ resolve_project_dir() {
     fi
     resolved=$(cd "${input}" && pwd)
   else
-    # Project name - look in PROJECTS_ROOT first, then current directory
-    if [[ -d "${PROJECTS_ROOT}/${input}" ]]; then
+    # Project name - check virtual projects first, then PROJECTS_ROOT, then current directory
+    if is_virtual_project "${input}"; then
+      # Virtual project - use configured directory or current directory
+      local vdir
+      vdir=$(get_virtual_project_dir "${input}")
+      if [[ -n "${vdir}" ]]; then
+        if [[ ! -d "${vdir}" ]]; then
+          echo "Error: Virtual project directory '${vdir}' does not exist" >&2
+          return 1
+        fi
+        resolved=$(cd "${vdir}" && pwd)
+      else
+        # No directory configured - use current directory
+        resolved="${PWD}"
+      fi
+    elif [[ -d "${PROJECTS_ROOT}/${input}" ]]; then
       resolved=$(cd "${PROJECTS_ROOT}/${input}" && pwd)
     elif [[ -d "${input}" ]]; then
       # Fallback: try current directory
@@ -52,12 +67,25 @@ list_projects() {
     count=$((count + 1))
   done < <(find "${PROJECTS_ROOT}" -mindepth 1 -maxdepth 1 -type d ! -name ".*" | sort)
 
+  # List virtual projects
+  if (( ${#VIRTUAL_PROJECTS[@]} > 0 )); then
+    echo ""
+    echo "Virtual projects:"
+    echo ""
+    local name
+    for name in ${(ko)VIRTUAL_PROJECTS}; do
+      printf '  %s\n' "${name}"
+      count=$((count + 1))
+    done
+  fi
+
   echo ""
   echo "${count} project(s) found"
 }
 
 # Interactive project picker
 # Sets global SELECTED_PROJECTS array instead of printing (to avoid subshell issues)
+# For virtual projects, stores "virtual:<name>" to distinguish from directory paths
 interactive_select() {
   local -a projects
   local -i index=1
@@ -76,6 +104,20 @@ interactive_select() {
     printf '  %2d) %s\n' "${index}" "$(basename "${dir}")"
     index=$((index + 1))
   done < <(find "${PROJECTS_ROOT}" -mindepth 1 -maxdepth 1 -type d ! -name ".*" | sort)
+
+  # Add virtual projects
+  if (( ${#VIRTUAL_PROJECTS[@]} > 0 )); then
+    echo ""
+    echo "Virtual projects:"
+    echo ""
+    local name
+    for name in ${(ko)VIRTUAL_PROJECTS}; do
+      # Store as "virtual:<name>" marker
+      projects+=("virtual:${name}")
+      printf '  %2d) %s\n' "${index}" "${name}"
+      index=$((index + 1))
+    done
+  fi
 
   if (( ${#projects[@]} == 0 )); then
     echo "No projects found."

@@ -22,6 +22,12 @@ DEFAULT_LAYOUT="3-col"
 # Array of commands in spatial order (left-to-right, top-to-bottom)
 typeset -a PANE_COMMANDS
 
+# Virtual projects: associative array mapping project name -> directory (or empty string)
+typeset -A VIRTUAL_PROJECTS
+
+# Project directory (set by parse_project_config for virtual projects)
+PROJECT_DIRECTORY=""
+
 # Parse the main config file
 parse_config() {
   if [[ ! -f "${CONFIG_FILE}" ]]; then
@@ -76,11 +82,84 @@ parse_config() {
   done < "${CONFIG_FILE}"
 }
 
+# Parse all virtual projects from config
+# Populates VIRTUAL_PROJECTS associative array: name -> directory (or empty)
+parse_virtual_projects() {
+  [[ ! -f "${CONFIG_FILE}" ]] && return 1
+
+  # Reset
+  VIRTUAL_PROJECTS=()
+
+  local line current_project="" is_virtual=false project_dir=""
+  local in_projects=false
+
+  while IFS= read -r line || [[ -n "${line}" ]]; do
+    [[ "${line}" =~ ^[[:space:]]*# ]] && continue
+
+    # Detect projects: section
+    if [[ "${line}" =~ ^projects:[[:space:]]*$ ]]; then
+      in_projects=true
+      continue
+    elif [[ ! "${line}" =~ ^[[:space:]] && "${line}" != "" ]]; then
+      # New top-level key, exit projects section
+      in_projects=false
+    fi
+
+    if [[ "${in_projects}" == true ]]; then
+      # New project entry (2-space indent, name followed by colon)
+      if [[ "${line}" =~ ^[[:space:]]{2}([^[:space:]][^:]*):[[:space:]]*$ ]]; then
+        # Save previous project if it was virtual
+        if [[ -n "${current_project}" && "${is_virtual}" == true ]]; then
+          VIRTUAL_PROJECTS[${current_project}]="${project_dir}"
+        fi
+        # Start new project
+        current_project="${match[1]}"
+        is_virtual=false
+        project_dir=""
+        continue
+      fi
+
+      # Parse project properties (4-space indent)
+      if [[ -n "${current_project}" ]]; then
+        if [[ "${line}" =~ ^[[:space:]]+virtual:[[:space:]]*true[[:space:]]*$ ]]; then
+          is_virtual=true
+        elif [[ "${line}" =~ ^[[:space:]]+directory:[[:space:]]*(.+)$ ]]; then
+          project_dir="${match[1]}"
+          # Expand ~ to HOME
+          project_dir="${project_dir/#\~/${HOME}}"
+        fi
+      fi
+    fi
+  done < "${CONFIG_FILE}"
+
+  # Don't forget the last project
+  if [[ -n "${current_project}" && "${is_virtual}" == true ]]; then
+    VIRTUAL_PROJECTS[${current_project}]="${project_dir}"
+  fi
+}
+
+# Check if a project is virtual
+is_virtual_project() {
+  local name=$1
+  (( ${+VIRTUAL_PROJECTS[$name]} ))
+}
+
+# Get virtual project directory (returns empty if no directory configured)
+get_virtual_project_dir() {
+  local name=$1
+  if (( ${+VIRTUAL_PROJECTS[$name]} )); then
+    echo "${VIRTUAL_PROJECTS[$name]}"
+  fi
+}
+
 # Parse project-specific overrides (call after parse_config)
 parse_project_config() {
   local target_project=$1
 
   [[ ! -f "${CONFIG_FILE}" ]] && return 1
+
+  # Reset project directory
+  PROJECT_DIRECTORY=""
 
   # Escape regex metacharacters in project name for safe matching
   local escaped_project="${target_project//\\/\\\\}"
@@ -129,6 +208,10 @@ parse_project_config() {
     if [[ "${in_project}" == true ]]; then
       if [[ "${line}" =~ ^[[:space:]]+layout:[[:space:]]*(.+)$ ]]; then
         DEFAULT_LAYOUT="${match[1]}"
+      elif [[ "${line}" =~ ^[[:space:]]+directory:[[:space:]]*(.+)$ ]]; then
+        PROJECT_DIRECTORY="${match[1]}"
+        # Expand ~ to HOME
+        PROJECT_DIRECTORY="${PROJECT_DIRECTORY/#\~/${HOME}}"
       # Handle commands array format
       elif [[ "${in_commands}" == true ]]; then
         if [[ "${line}" =~ ^[[:space:]]+-[[:space:]]+\"(.*)\"$ ]]; then
