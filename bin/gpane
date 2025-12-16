@@ -24,6 +24,54 @@ source "${GPANE_ROOT}/lib/setup.zsh"
 DRY_RUN=false
 REUSE_WINDOW=false
 
+# Open session for a virtual project (explicit name and directory)
+# Sets PROJECT_LAYOUT as side effect (for caller to use in header)
+open_session_virtual() {
+  local project_name=$1
+  local project_dir=$2
+  local reuse_window=${3:-false}
+
+  parse_config
+  parse_project_config "${project_name}"
+
+  # Resolve layout alias to row notation
+  local resolved_layout
+  resolved_layout=$(resolve_layout_alias "${DEFAULT_LAYOUT}")
+  PROJECT_LAYOUT="${resolved_layout}"
+
+  if [[ "${DRY_RUN}" == true ]]; then
+    local window_mode="new"
+    [[ "${reuse_window}" == "true" ]] && window_mode="current"
+    echo "  ${project_name} (virtual)"
+    echo "    dir:    ${project_dir}"
+    echo "    layout: ${resolved_layout}"
+    echo "    window: ${window_mode}"
+    if is_tabs_layout "${resolved_layout}"; then
+      local num_tabs=${#PANE_COMMANDS[@]}
+      (( num_tabs > 10 )) && num_tabs=10
+      for ((i = 1; i <= num_tabs; i++)); do
+        local cmd="${PANE_COMMANDS[$i]:-}"
+        echo "    tab ${i}/${num_tabs}: ${cmd:-<empty>}"
+      done
+    else
+      local total_panes
+      total_panes=$(compute_total_panes "${resolved_layout}")
+      for ((i = 1; i <= total_panes; i++)); do
+        local cmd="${PANE_COMMANDS[$i]:-}"
+        echo "    pane $i: ${cmd:-<empty>}"
+      done
+    fi
+    return 0
+  fi
+
+  # Route to appropriate layout handler
+  if is_tabs_layout "${resolved_layout}"; then
+    layout_tabs "${project_name}" "${project_dir}" "${reuse_window}" "${PANE_COMMANDS[@]}"
+  else
+    layout_dynamic "${project_name}" "${project_dir}" "${resolved_layout}" "${reuse_window}" "${PANE_COMMANDS[@]}"
+  fi
+}
+
 # Open session for a project
 # Sets PROJECT_LAYOUT as side effect (for caller to use in header)
 open_session() {
@@ -108,6 +156,7 @@ main() {
     list)
       config_exists || { echo "Run 'gpane setup' first."; exit 1; }
       parse_config
+      parse_virtual_projects
       list_projects
       ;;
     uninstall)
@@ -121,6 +170,7 @@ main() {
         check_for_updates
         [[ "${DRY_RUN}" == false ]] && check_ghostty
         parse_config
+        parse_virtual_projects
         interactive_select || exit 1
 
         local count=${#SELECTED_PROJECTS[@]}
@@ -133,10 +183,23 @@ main() {
         fi
 
         local is_first=true
-        for dir in "${SELECTED_PROJECTS[@]}"; do
+        for entry in "${SELECTED_PROJECTS[@]}"; do
           local should_reuse="false"
           [[ "${REUSE_WINDOW}" == true && "${is_first}" == true ]] && should_reuse="true"
-          open_session "${dir}" "${should_reuse}"
+
+          # Handle virtual projects (marked as "virtual:<name>")
+          if [[ "${entry}" == virtual:* ]]; then
+            local vname="${entry#virtual:}"
+            local vdir
+            vdir=$(get_virtual_project_dir "${vname}")
+            if [[ -n "${vdir}" ]]; then
+              open_session_virtual "${vname}" "${vdir}" "${should_reuse}"
+            else
+              open_session_virtual "${vname}" "${PWD}" "${should_reuse}"
+            fi
+          else
+            open_session "${entry}" "${should_reuse}"
+          fi
           is_first=false
         done
 
@@ -151,8 +214,7 @@ main() {
       check_for_updates
       [[ "${DRY_RUN}" == false ]] && check_ghostty
       parse_config
-      local project_dir
-      project_dir=$(resolve_project_dir "${cmd}") || exit 1
+      parse_virtual_projects
 
       if [[ "${DRY_RUN}" == true ]]; then
         echo ""
@@ -164,7 +226,21 @@ main() {
 
       local should_reuse="false"
       [[ "${REUSE_WINDOW}" == true ]] && should_reuse="true"
-      open_session "${project_dir}" "${should_reuse}"
+
+      # Check if it's a virtual project
+      if is_virtual_project "${cmd}"; then
+        local vdir
+        vdir=$(get_virtual_project_dir "${cmd}")
+        if [[ -n "${vdir}" ]]; then
+          open_session_virtual "${cmd}" "${vdir}" "${should_reuse}"
+        else
+          open_session_virtual "${cmd}" "${PWD}" "${should_reuse}"
+        fi
+      else
+        local project_dir
+        project_dir=$(resolve_project_dir "${cmd}") || exit 1
+        open_session "${project_dir}" "${should_reuse}"
+      fi
 
       if [[ "${DRY_RUN}" == false ]]; then
         echo ""
