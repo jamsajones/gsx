@@ -169,7 +169,18 @@ projects:
     commands:
       - "claude"
       - ""
+
+  # Virtual projects — no folder in PROJECTS_ROOT required
+  remote-dev:
+    virtual: true
+    directory: ~/work/remote    # Optional - uses current directory if omitted
+    layout: duo
+    commands:
+      - "ssh dev.company.com"
+      - ""
 ```
+
+Virtual projects let you create sessions without a physical project folder. Set `virtual: true` and optionally specify a `directory` (defaults to your current working directory). Useful for SSH sessions or projects outside your projects folder.
 
 ## Known Issues
 
